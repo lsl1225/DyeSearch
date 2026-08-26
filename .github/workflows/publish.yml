@@ -1,0 +1,51 @@
+name: Build & Publish to Latest Release
+
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: write
+
+jobs:
+  Build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Download Dalamud
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://goatcorp.github.io/dalamud-distrib/latest.zip" `
+            -OutFile "latest.zip"
+
+          Expand-Archive `
+            -Force `
+            "latest.zip" `
+            "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+      - name: Restore
+        run: dotnet restore DyeSearch.csproj
+
+      - name: Build
+        run: dotnet build DyeSearch.csproj --configuration Release --no-restore
+
+      - name: Show build output
+        shell: pwsh
+        run: |
+          Get-ChildItem "./bin/Release" -Recurse
+
+      - name: Upload to GitHub release
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" "./bin/Release/DyeSearch/latest.zip"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
