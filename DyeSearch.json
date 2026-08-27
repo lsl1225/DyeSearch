@@ -5,6 +5,5 @@
   "Description": "在染色面板旁显示可供搜索的染剂颜色列表，用于自动选取想要的颜色。 Shows a searchable dye color list attached to the native dye panel and selects the matching dye category and color.",
   "InternalName": "DyeSearch",
   "ApplicableVersion": "any",
-  "AssemblyVersion": "1.0.0.0",
-  "DalamudApiLevel": 15
+  "RepoUrl": "https://github.com/lsl1225/DyeSearch"
 }
