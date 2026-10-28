@@ -16,6 +16,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const float WindowWidth = 350f;
     private const float Gap = 6f;
     private const int SelectionTimeoutMs = 6000;
+    private const int CurrentCategoryColorIndexOffset = 1;
 
     private static readonly TimeSpan InitialSelectionDelay = TimeSpan.FromMilliseconds(30);
     private static readonly TimeSpan UiPollDelay = TimeSpan.FromMilliseconds(90);
@@ -29,6 +30,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string search = string.Empty;
     private string selectionStatus = string.Empty;
     private int selectionGeneration;
+    private bool dyePanelVisible;
+    private nint dyePanelAddress;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
@@ -86,7 +89,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var addon = Svc.GameGui.GetAddonByName(DyeAddonName);
         if (addon.IsNull || !addon.IsReady || !addon.IsVisible)
+        {
+            if (dyePanelVisible)
+            {
+                dyePanelVisible = false;
+                dyePanelAddress = 0;
+                selectionGeneration++;
+            }
+
             return;
+        }
+
+        if (!dyePanelVisible || dyePanelAddress != addon.Address)
+        {
+            dyePanelVisible = true;
+            dyePanelAddress = addon.Address;
+            search = string.Empty;
+            selectionStatus = string.Empty;
+            selectionGeneration++;
+        }
 
         var viewport = ImGui.GetMainViewport();
         var viewportPos = viewport.Pos;
@@ -278,10 +299,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (IsNativeButtonChecked(categoryButton))
         {
             // 目标颜色已经位于当前分类时，不触发分类切换。
-            // 直接等待现有颜色网格稳定后再点击目标颜色。
+            // 仅 Shade == 2 的同分类选择补上 1 格。
+            // 其他 Shade 和跨分类路径保留 v0.7 的索引。
+            // 偏移随本次选择传递，刷新和重试时也使用同一个索引基准。
+            var colorIndexOffset = dye.Shade == 2 ? CurrentCategoryColorIndexOffset : 0;
             selectionStatus = $"当前分类已就绪，正在定位 {dye.Name}";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(
+                    dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -342,7 +367,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         // 使用真实时间等待，避免高帧率下两三个 tick 只有十几毫秒。
         Schedule(
-            () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+            () => WaitForColorGrid(dye, generation, deadline, 0, 0, 0),
             CategorySettleDelay);
     }
 
@@ -351,7 +376,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         int generation,
         long deadline,
         ulong previousSignature,
-        int stableSamples)
+        int stableSamples,
+        int colorIndexOffset)
     {
         if (!IsSelectionActive(generation))
             return;
@@ -366,12 +392,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (addon == null)
         {
             Retry(
-                () => WaitForColorGrid(dye, generation, deadline, previousSignature, stableSamples),
+                () => WaitForColorGrid(
+                    dye, generation, deadline, previousSignature, stableSamples, colorIndexOffset),
                 "等待染色面板");
             return;
         }
 
-        if (!TryGetColorIndex(dye, out var colorIndex))
+        if (!TryGetColorIndex(dye, colorIndexOffset, out var colorIndex))
         {
             selectionStatus = $"无法确定 {dye.Name} 在分类中的位置";
             return;
@@ -385,7 +412,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 ? "等待原生颜色列表"
                 : $"等待原生颜色列表，已发现 {lists.Count} 个 List";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -395,7 +422,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             selectionStatus = $"等待颜色列表项目 {info.ListLength}/{colorIndex + 1}";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -416,19 +443,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     generation,
                     deadline,
                     signature,
-                    nextStableSamples),
+                    nextStableSamples,
+                    colorIndexOffset),
                 UiPollDelay);
             return;
         }
 
-        SelectTargetColor(dye, generation, deadline, colorIndex);
+        SelectTargetColor(dye, generation, deadline, colorIndex, colorIndexOffset);
     }
 
     private void SelectTargetColor(
         DyeEntry dye,
         int generation,
         long deadline,
-        int colorIndex)
+        int colorIndex,
+        int colorIndexOffset)
     {
         if (!IsSelectionActive(generation))
             return;
@@ -443,7 +472,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (addon == null)
         {
             Retry(
-                () => SelectTargetColor(dye, generation, deadline, colorIndex),
+                () => SelectTargetColor(dye, generation, deadline, colorIndex, colorIndexOffset),
                 "等待染色面板");
             return;
         }
@@ -453,7 +482,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             selectionStatus = $"颜色列表发生变化，重新定位 {dye.Name}";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -464,7 +493,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             selectionStatus = $"等待 {dye.Name} 对应的列表项目";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -490,7 +519,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 dye,
                 generation,
                 deadline,
-                colorIndex),
+                colorIndex,
+                colorIndexOffset),
             ColorClickDelay);
     }
 
@@ -498,7 +528,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         DyeEntry dye,
         int generation,
         long deadline,
-        int colorIndex)
+        int colorIndex,
+        int colorIndexOffset)
     {
         if (!IsSelectionActive(generation))
             return;
@@ -517,7 +548,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     dye,
                     generation,
                     deadline,
-                    colorIndex),
+                    colorIndex,
+                    colorIndexOffset),
                 "等待染色面板");
             return;
         }
@@ -527,7 +559,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             selectionStatus = $"颜色列表发生变化，重新定位 {dye.Name}";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -538,7 +570,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             selectionStatus = $"等待 {dye.Name} 对应的列表项目";
             Schedule(
-                () => WaitForColorGrid(dye, generation, deadline, 0, 0),
+                () => WaitForColorGrid(dye, generation, deadline, 0, 0, colorIndexOffset),
                 UiPollDelay);
             return;
         }
@@ -567,15 +599,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
         selectionStatus = $"已选择 {dye.Name}";
     }
 
-    private bool TryGetColorIndex(DyeEntry dye, out int colorIndex)
+    private bool TryGetColorIndex(DyeEntry dye, int colorIndexOffset, out int colorIndex)
     {
         colorIndex = -1;
 
         if (!dyesByShade.TryGetValue(dye.Shade, out var shadeDyes))
             return false;
 
-        colorIndex = shadeDyes.FindIndex(x => x.StainId == dye.StainId);
-        return colorIndex >= 0;
+        var orderedIndex = shadeDyes.FindIndex(x => x.StainId == dye.StainId);
+        if (orderedIndex < 0)
+            return false;
+
+        colorIndex = orderedIndex + colorIndexOffset;
+        return true;
     }
 
     private static ulong ComputeListSignature(NativeList list)

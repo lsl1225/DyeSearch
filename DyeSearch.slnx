@@ -2,6 +2,9 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
+  <Folder Name="/解决方案项/">
+    <File Path="DyeSearch.json" />
+  </Folder>
   <Project Path="DyeSearch.csproj">
     <Platform Project="x64" />
   </Project>
